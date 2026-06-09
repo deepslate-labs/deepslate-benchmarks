@@ -10,11 +10,11 @@ from tqdm import tqdm
 # --- CONFIGURATION ---
 # Directory containing your pipeline's output .wav files
 BENCH_DIR = Path(__file__).resolve().parent
-RESPONSE_DIR = BENCH_DIR / "benchmark_outputs"
+RESPONSE_DIR = Path(os.getenv("RESPONSE_DIR") or (BENCH_DIR / "benchmark_outputs"))
 # Pattern for your files. {id} will be replaced by the dataset ID (0-999)
 RESPONSE_FILE_PATTERN = "response_{id}.wav"
 # Output file for detailed evaluation results
-RESULTS_PATH = BENCH_DIR / "bba_evaluation_results.json"
+RESULTS_PATH = Path(os.getenv("RESULTS_PATH") or (BENCH_DIR / "bba_evaluation_results.json"))
 # Dataset split to evaluate
 
 # OpenAI API Key
@@ -189,13 +189,31 @@ def main():
         })
 
     # 6. Calculate and Print Stats
-    if total_count > 0:
-        accuracy = (correct_count / total_count) * 100
+    # Artificial Analysis methodology (Big Bench Audio v1.2): accuracy is the
+    # number of correct answers out of the full question set, with questions the
+    # model did not answer (missing or empty responses) counted as INCORRECT.
+    # So the AA-comparable denominator includes the missing responses. This figure
+    # is only a faithful AA score when the whole benchmark has been run (every
+    # question attempted); on a partial smoke test the "responses received" figure
+    # below is the meaningful one.
+    attempted = total_count + missing_count
+    if attempted > 0:
+        accuracy_aa = (correct_count / attempted) * 100
         print(f"\n--- Final Results ---")
-        print(f"Total Evaluated: {total_count}")
-        if missing_count:
-            print(f"Missing Responses: {missing_count}")
-        print(f"Accuracy: {accuracy:.2f}%")
+        print(
+            f"Questions: {attempted}  "
+            f"(responses received: {total_count}, missing/unanswered: {missing_count})"
+        )
+        print(
+            f"Accuracy (AA methodology, unanswered = incorrect): "
+            f"{accuracy_aa:.2f}%  [{correct_count}/{attempted}]"
+        )
+        if total_count:
+            accuracy_received = (correct_count / total_count) * 100
+            print(
+                f"Accuracy (responses received only): "
+                f"{accuracy_received:.2f}%  [{correct_count}/{total_count}]"
+            )
 
         # Save detailed results
         results_dir = RESULTS_PATH.parent
@@ -204,7 +222,7 @@ def main():
             json.dump(results, f, indent=2)
         print(f"Detailed results saved to {RESULTS_PATH}")
     else:
-        print("No files were evaluated. Check RESPONSE_DIR and RESPONSE_FILE_PATTERN.")
+        print("No questions found. Check the dataset and RESPONSE_DIR.")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from deepslate.core import (
     DeepslateSession,
     DeepslateSessionListener,
     ElevenLabsTtsConfig,
+    HostedTtsConfig,
     TriggerMode,
     VadConfig,
 )
@@ -23,7 +24,21 @@ BENCH_DIR = Path(__file__).resolve().parent
 # DeepslateOptions.from_env() reads DEEPSLATE_ORGANIZATION_ID; this repo's docs
 # use DEEPSLATE_ORG_ID, so accept both.
 ORG_ID = os.getenv("DEEPSLATE_ORGANIZATION_ID") or os.getenv("DEEPSLATE_ORG_ID")
-OUTPUT_DIR = BENCH_DIR / "benchmark_outputs"
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR") or (BENCH_DIR / "benchmark_outputs"))
+
+# Base URL override, e.g. https://app.staging.deepslate.eu for staging. The SDK
+# defaults to production (https://app.deepslate.eu) when this is unset.
+BASE_URL = os.getenv("DEEPSLATE_BASE_URL")
+WS_URL = os.getenv("DEEPSLATE_WS_URL")  # direct websocket endpoint (bypasses gateway)
+SYSTEM_PROMPT = os.getenv("DEEPSLATE_SYSTEM_PROMPT", "You are a helpful assistant.")
+TEMPERATURE = float(os.getenv("DEEPSLATE_TEMPERATURE", "0"))
+
+# TTS provider: "hosted" (Deepslate-hosted/cloned voice, default) or "elevenlabs".
+TTS_PROVIDER = os.getenv("DEEPSLATE_TTS_PROVIDER", "hosted")
+# Deepslate-hosted voice id (used when TTS_PROVIDER == "hosted").
+HOSTED_TTS_VOICE_ID = os.getenv(
+    "DEEPSLATE_TTS_VOICE_ID", "c3dfa73f-a1ab-4aad-b48a-0e9b9fe4a69f"
+)
 ELEVEN_LABS_API_KEY = os.getenv("ELEVEN_LABS_API_KEY")
 ELEVEN_LABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
@@ -52,9 +67,9 @@ CONCURRENCY = int(os.getenv("CONCURRENCY", "6"))
 # flow, but it does deliver the full audio. We therefore treat a response as
 # complete once no audio chunk has arrived for RESPONSE_SILENCE_GRACE seconds
 # (after at least one chunk), or when ResponseEnd does arrive.
-FIRST_CHUNK_TIMEOUT = 25.0    # max wait for the response to start
-RESPONSE_SILENCE_GRACE = 3.0  # quiet gap after last audio chunk => done
-HARD_TIMEOUT = 180.0          # absolute ceiling per question (backstop only)
+FIRST_CHUNK_TIMEOUT = float(os.getenv("FIRST_CHUNK_TIMEOUT", "25"))      # max wait for the response to start
+RESPONSE_SILENCE_GRACE = float(os.getenv("RESPONSE_SILENCE_GRACE", "3"))  # quiet gap after last audio chunk => done
+HARD_TIMEOUT = float(os.getenv("HARD_TIMEOUT", "180"))                    # absolute ceiling per question (backstop only)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -65,11 +80,23 @@ def build_options():
     # (The SDK defaults temperature to 1.0, which makes the model ramble and
     # hurts the judged answer.) temperature=0.0 is a proto3 default, so it is
     # omitted on the wire and the server decodes deterministically.
-    return DeepslateOptions.from_env(
+    if WS_URL:
+        return DeepslateOptions(
+            vendor_id=os.getenv("DEEPSLATE_VENDOR_ID", "x"),
+            organization_id=ORG_ID or "x",
+            api_key=os.getenv("DEEPSLATE_API_KEY", ""),
+            ws_url=WS_URL,
+            system_prompt=SYSTEM_PROMPT,
+            temperature=TEMPERATURE,
+        )
+    kwargs = dict(
         organization_id=ORG_ID,
-        system_prompt="You are a helpful assistant.",
-        temperature=0.0,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=TEMPERATURE,
     )
+    if BASE_URL:
+        kwargs["base_url"] = BASE_URL
+    return DeepslateOptions.from_env(**kwargs)
 
 
 def build_vad_config():
@@ -83,10 +110,13 @@ def build_vad_config():
 
 
 def build_tts_config():
-    return ElevenLabsTtsConfig(
-        api_key=ELEVEN_LABS_API_KEY,
-        voice_id=ELEVEN_LABS_VOICE_ID,
-    )
+    if TTS_PROVIDER == "elevenlabs":
+        return ElevenLabsTtsConfig(
+            api_key=ELEVEN_LABS_API_KEY,
+            voice_id=ELEVEN_LABS_VOICE_ID,
+        )
+    # Deepslate-hosted (cloned) voice — no external TTS credentials needed.
+    return HostedTtsConfig(voice_id=HOSTED_TTS_VOICE_ID)
 
 
 class _ResponseCollector(DeepslateSessionListener):
@@ -95,7 +125,9 @@ class _ResponseCollector(DeepslateSessionListener):
     def __init__(self):
         self.ready = asyncio.Event()
         self.audio_chunks = []
+        self.transcripts = []
         self.first_chunk_seen = False
+        self.first_audio_time = None
         self.last_audio_time = None
         self.response_ended = False
         self.out_sample_rate = SAMPLE_RATE
@@ -106,8 +138,13 @@ class _ResponseCollector(DeepslateSessionListener):
 
     async def on_audio_chunk(self, pcm_bytes, sample_rate, channels, transcript):
         self.audio_chunks.append(pcm_bytes)
+        if transcript:
+            self.transcripts.append(transcript)
+        now = time.monotonic()
+        if self.first_audio_time is None:
+            self.first_audio_time = now
         self.first_chunk_seen = True
-        self.last_audio_time = time.monotonic()
+        self.last_audio_time = now
         self.out_sample_rate = sample_rate
         self.out_channels = channels
 
@@ -190,6 +227,7 @@ async def run_single_inference(audio_array, sample_rate, question_id, http_sessi
                     await asyncio.sleep(sleep_for)
 
         # Commit the buffered speech and trigger a single inference.
+        trigger_time = time.monotonic()
         await session.trigger_inference(flush_vad=True)
 
         # Keep feeding silence so the input pipeline stays alive while the model
@@ -232,7 +270,12 @@ async def run_single_inference(audio_array, sample_rate, question_id, http_sessi
             except asyncio.CancelledError:
                 pass
 
-        return b"".join(listener.audio_chunks), listener.out_sample_rate
+        ttfa = (
+            listener.first_audio_time - trigger_time
+            if listener.first_audio_time is not None
+            else None
+        )
+        return b"".join(listener.audio_chunks), listener.out_sample_rate, "".join(listener.transcripts), ttfa
     finally:
         await session.close()
 
@@ -277,7 +320,7 @@ async def process_item(item, idx, total, sem, progress, http_session):
     if result is None:
         print(f"  Q{question_id}: no response (timeout); not saved.")
         return
-    response_audio, out_sample_rate = result
+    response_audio, out_sample_rate, transcript, ttfa = result
     if not response_audio:
         print(f"  Q{question_id}: empty response; not saved.")
         return
@@ -287,8 +330,13 @@ async def process_item(item, idx, total, sem, progress, http_session):
         wav_file.setsampwidth(2)
         wav_file.setframerate(out_sample_rate)
         wav_file.writeframes(response_audio)
+    # Sidecar: the model's own transcript of the spoken answer (may be empty if
+    # the TTS path doesn't surface it) — lets us compare against Whisper.
+    (OUTPUT_DIR / f"transcript_{question_id}.txt").write_text(transcript or "")
+    # Sidecar: time-to-first-audio (seconds) for the latency metrics in the report.
+    (OUTPUT_DIR / f"ttfa_{question_id}.txt").write_text("" if ttfa is None else f"{ttfa:.4f}")
     dur = len(response_audio) / 2 / out_sample_rate
-    print(f"  saved {output_filename.name} ({dur:.1f}s)")
+    print(f"  saved {output_filename.name} ({dur:.1f}s, transcript {len(transcript)} chars)")
 
 
 async def amain():
