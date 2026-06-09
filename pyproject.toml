@@ -5,7 +5,7 @@ description = "Deesplate benchmark repository"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "anthropic[vertex]",
+  "anthropic",
   "datasets<3",
   "deepslate-core",
   "jiwer",

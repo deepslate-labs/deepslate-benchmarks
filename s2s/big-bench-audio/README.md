@@ -1,7 +1,7 @@
 # Big Bench Audio Benchmark
 
 Run Big Bench Audio QA through the Deepslate realtime API and evaluate responses with Whisper transcription plus a
-Vertex AI Claude Sonnet 4.5 judge.
+Claude judge via the direct Anthropic API.
 
 ## References
 
@@ -18,8 +18,7 @@ Vertex AI Claude Sonnet 4.5 judge.
     - `ELEVEN_LABS_API_KEY`
 - Evaluation credentials:
     - `OPENAI_API_KEY`
-    - `VERTEX_PROJECT_ID`
-    - `VERTEX_LOCATION` (optional, defaults to `us-central1`)
+    - `ANTHROPIC_API_KEY`
 
 ## Run benchmark
 
@@ -36,8 +35,7 @@ python run_benchmark.py
 
 ```shell
 export OPENAI_API_KEY="your_key"
-export VERTEX_PROJECT_ID="your_gcp_project"
-# export VERTEX_LOCATION="us-central1"
+export ANTHROPIC_API_KEY="your_anthropic_key"
 
 python evaluate.py
 ```

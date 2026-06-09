@@ -19,34 +19,35 @@ RESULTS_PATH = BENCH_DIR / "bba_evaluation_results.json"
 
 # OpenAI API Key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Vertex AI config for Claude judge
-VERTEX_PROJECT_ID = os.getenv("VERTEX_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
+# Anthropic API key for the Claude judge (direct first-party API).
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # Models
 # OpenAI model to transcribe the responses
 TRANSCRIPTION_MODEL = "whisper-1"
-# Vertex AI model for the judge
-JUDGE_MODEL = "claude-sonnet-4-5"
+# Anthropic model for the judge.
+# The original Artificial Analysis Big Bench Audio methodology judged with
+# Claude 3.5 Sonnet, but that model is retired on the direct Anthropic API (404
+# since 2025-10-28). claude-sonnet-4-6 is its drop-in replacement and keeps the
+# judge in the same Sonnet family. Note: a different judge than the original
+# means scores are not directly comparable to the published leaderboard.
+JUDGE_MODEL = "claude-sonnet-4-6"
 
 # --- CLIENT SETUP ---
 def build_openai_client():
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
-def build_vertex_client():
+def build_anthropic_client():
     try:
-        from anthropic import AnthropicVertex
+        from anthropic import Anthropic
     except ImportError as e:
         raise RuntimeError(
-            "Missing dependency for Vertex AI Claude judge. "
-            "Install anthropic[vertex] to continue."
+            "Missing dependency for the Claude judge. Install anthropic to continue."
         ) from e
-    if not VERTEX_PROJECT_ID:
-        raise RuntimeError(
-            "VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT must be set for Vertex AI."
-        )
-    return AnthropicVertex(project_id=VERTEX_PROJECT_ID, region=VERTEX_LOCATION)
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY must be set for the Claude judge.")
+    return Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def transcribe_audio(openai_client, audio_path_or_file):
@@ -63,7 +64,7 @@ def transcribe_audio(openai_client, audio_path_or_file):
         return ""
 
 
-def _extract_vertex_text(response):
+def _extract_text(response):
     if not response or not getattr(response, "content", None):
         return ""
     parts = []
@@ -76,10 +77,10 @@ def _extract_vertex_text(response):
     return "".join(parts).strip()
 
 
-def get_judge_decision(vertex_client, question_text, official_answer, candidate_answer):
+def get_judge_decision(anthropic_client, question_text, official_answer, candidate_answer):
     """
-    Calls the LLM Judge (Vertex AI Claude) to evaluate the answer
-    using the exact prompt from the Artificial Analysis methodology.
+    Calls the LLM Judge (Claude via the direct Anthropic API) to evaluate the
+    answer using the exact prompt from the Artificial Analysis methodology.
     """
     prompt_template = """Assess whether the following CANDIDATE ANSWER is CORRECT or INCORRECT.
 For the CANDIDATE ANSWER to be correct, it must be consistent with the OFFICIAL ANSWER.
@@ -103,21 +104,21 @@ Reply only with CORRECT or INCORRECT."""
     )
 
     try:
-        response = vertex_client.messages.create(
+        response = anthropic_client.messages.create(
             model=JUDGE_MODEL,
             temperature=0,
             max_tokens=10,
             messages=[{"role": "user", "content": formatted_prompt}],
         )
-        return _extract_vertex_text(response)
+        return _extract_text(response)
     except Exception as e:
-        print(f"Error calling Vertex AI judge: {e}")
+        print(f"Error calling Claude judge: {e}")
         return "ERROR"
 
 
 def main():
     openai_client = build_openai_client()
-    vertex_client = build_vertex_client()
+    anthropic_client = build_anthropic_client()
 
     # 1. Load the Benchmark Dataset
     print("Loading Big Bench Audio dataset...")
@@ -166,7 +167,7 @@ def main():
             is_correct = False
         else:
             decision = get_judge_decision(
-                vertex_client,
+                anthropic_client,
                 question_text,
                 official_answer,
                 candidate_transcript,
