@@ -32,12 +32,9 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Optional: regenerate `realtime_pb2.py` from the proto file.
-
-```shell
-pip install -e .[dev]
-python -m grpc_tools.protoc -I . --python_out=. realtime.proto
-```
+The realtime protocol is driven through the official [`deepslate-core`](https://pypi.org/project/deepslate-core/)
+SDK, which ships and versions the protobuf bindings — no local proto generation
+required.
 
 ## Configure Deepslate credentials
 

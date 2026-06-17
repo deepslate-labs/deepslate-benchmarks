@@ -5,20 +5,15 @@ description = "Deesplate benchmark repository"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "anthropic[vertex]",
+  "anthropic",
   "datasets<3",
+  "deepslate-core",
   "jiwer",
   "librosa",
   "numpy",
   "openai",
-  "protobuf",
   "soundfile",
   "tqdm",
-  "websockets",
-]
-[project.optional-dependencies]
-dev = [
-  "grpcio-tools",
 ]
 
 [build-system]
@@ -26,4 +21,4 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["s2t"]
+packages = ["s2s"]
